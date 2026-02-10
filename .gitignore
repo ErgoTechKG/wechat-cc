@@ -3,3 +3,7 @@
 
 # macOS
 .DS_Store
+
+# Local config and data
+config.yaml
+data/

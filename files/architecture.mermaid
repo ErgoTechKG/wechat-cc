@@ -1,0 +1,57 @@
+---
+title: 微信好友 → Claude Code (Docker 沙箱隔离)
+---
+sequenceDiagram
+    participant A as 好友A (normal)
+    participant B as 好友B (trusted)
+    participant C as 管理员
+    participant W as 微信Bot
+    participant R as 消息路由器
+    participant DM as Docker Manager
+    participant DA as 🐳 容器A<br/>内存512M CPU1<br/>网络:none
+    participant DB as 🐳 容器B<br/>内存512M CPU1<br/>网络:limited
+    participant DC as 🐳 容器C<br/>内存2G CPU2<br/>网络:bridge
+
+    Note over DM: 启动时检查:<br/>Docker可用 ✓<br/>沙箱镜像 ✓<br/>网络初始化 ✓
+
+    A->>W: "帮我解释快排算法"
+    W->>R: {wxid_A, msg}
+    R->>R: 权限检查 → normal
+    R->>R: 速率限制 → ✅
+    R->>DM: ensureContainer(wxid_A, normal)
+    DM->>DM: 容器不存在 → 创建
+    Note over DM: docker create<br/>--memory 512m<br/>--cpus 1<br/>--network none<br/>--read-only<br/>--cap-drop ALL<br/>-v data/wxid_A/workspace:/workspace
+    DM->>DA: docker start
+    R->>DA: docker exec claude --print msg
+    Note over DA: Claude运行在容器内<br/>non-root用户<br/>无网络访问<br/>只能读写 /workspace
+    DA-->>R: "快排是一种分治算法..."
+    R-->>W: 回复
+    W-->>A: "快排是一种分治算法..."
+
+    B->>W: "帮我写个Python爬虫并运行"
+    W->>R: {wxid_B, msg}
+    R->>R: 权限检查 → trusted
+    R->>DM: ensureContainer(wxid_B, trusted)
+    Note over DM: 容器B已存在且运行中
+    R->>DB: docker exec claude --print msg
+    Note over DB: Claude可以执行代码<br/>受限网络(仅API)<br/>文件写入 /workspace
+    DB-->>R: "已创建 crawler.py..."
+    R-->>W: 回复
+    W-->>B: "已创建 crawler.py..."
+
+    Note over DA,DC: ⚠️ 好友A与好友B的容器<br/>完全隔离，互不可见
+
+    C->>W: "/containers"
+    W->>R: 管理命令
+    R->>DM: listContainers()
+    DM-->>R: 容器列表
+    R-->>W: "🐳 容器A: Up 5min\n🐳 容器B: Up 2min"
+    W-->>C: 容器状态
+
+    C->>W: "/destroy 好友A"
+    W->>R: 管理命令
+    R->>DM: destroyContainer(wxid_A)
+    DM->>DA: docker rm -f
+    Note over DA: 容器销毁<br/>workspace数据保留
+    R-->>W: "🗑️ 已销毁"
+    W-->>C: "已销毁好友A的容器"

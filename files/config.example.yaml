@@ -1,0 +1,66 @@
+# ============================================
+# 微信 → Claude Code 桥接系统配置 (Docker 沙箱版)
+# ============================================
+
+# 管理员微信ID（首次登录后会在日志中显示）
+admin_wxid: ""
+
+# Claude Code 配置
+claude:
+  cli_path: "claude"
+  timeout: 120
+
+# ============================================
+# Docker 沙箱配置（核心）
+# ============================================
+docker:
+  # 沙箱镜像名
+  image: "claude-sandbox:latest"
+  # 容器名前缀（每个好友容器命名为 prefix + wxid）
+  container_prefix: "claude-friend-"
+  # 好友数据持久化根目录（每人一个子目录）
+  data_dir: "~/claude-bridge-data"
+
+  # 资源限制
+  limits:
+    memory: "512m"         # 普通/trusted 用户内存限制
+    admin_memory: "2g"     # admin 内存限制
+    cpus: 1                # 普通/trusted CPU 核数
+    admin_cpus: 2          # admin CPU 核数
+    pids: 100              # 最大进程数
+    tmp_size: "100m"       # /tmp 大小限制
+
+  # 网络策略（不同权限对应不同网络）
+  network:
+    admin: "bridge"              # admin: 完全网络访问
+    trusted: "claude-limited"    # trusted: 受限网络（仅 API 访问）
+    normal: "none"               # normal: 完全断网
+
+# 权限控制
+permissions:
+  notify_unauthorized: true
+  unauthorized_message: "抱歉，你还没有被授权使用此服务。"
+  default_level: "normal"
+
+# 会话管理
+session:
+  expire_minutes: 60
+  max_history: 50
+
+# 速率限制
+rate_limit:
+  max_per_minute: 10
+  max_per_day: 200
+
+# 安全配置（Docker 隔离下这层作为额外保护）
+security:
+  blocked_patterns:
+    - "rm\\s+-rf\\s+/"
+    - ":(){ :|:& };:"     # fork bomb
+  trusted_file_access: true
+
+# 日志
+logging:
+  level: "info"
+  file: "logs/bridge.log"
+  log_message_content: true

@@ -1,0 +1,20 @@
+{
+  "name": "wechat-claude-bridge",
+  "version": "1.0.0",
+  "description": "微信好友消息路由到 Claude Code 的桥接系统",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "setup-db": "node src/setup-db.js"
+  },
+  "dependencies": {
+    "wechaty": "^1.20.2",
+    "wechaty-puppet-wechat4u": "^1.14.10",
+    "better-sqlite3": "^11.0.0",
+    "yaml": "^2.4.0",
+    "winston": "^3.11.0",
+    "uuid": "^9.0.0"
+  }
+}

@@ -1,0 +1,13 @@
+# docker compose 仅用于构建沙箱镜像
+# 容器的创建和管理由 docker-manager.js 动态完成
+
+services:
+  # 构建沙箱基础镜像
+  sandbox-base:
+    build:
+      context: .
+      dockerfile: Dockerfile.sandbox
+    image: claude-sandbox:latest
+    # 这个 service 不需要运行，仅用于 build
+    profiles:
+      - build-only

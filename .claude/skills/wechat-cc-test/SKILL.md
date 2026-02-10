@@ -1,13 +1,13 @@
 ---
 name: wechat-cc-test
-description: This skill should be used when testing the wechat-cc project (WeChat Claude Code bridge in Rust). It provides a structured workflow for building, running unit tests, performing end-to-end smoke tests with real Claude Code responses, and writing new test cases. Trigger when the user asks to test, validate, debug, or add test coverage to the project.
+description: This skill should be used when testing the wechat-cc project (Telegram/WeChat Claude Code bridge in Rust). It provides a structured workflow for building, running unit tests, performing end-to-end smoke tests with real Claude Code responses, and writing new test cases. Trigger when the user asks to test, validate, debug, or add test coverage to the project.
 ---
 
 # WeChat-CC Test Skill
 
 ## Overview
 
-Test the wechat-cc project end-to-end: build, run 123+ unit tests, then perform a live smoke test that sends a real message through the bridge and verifies Claude Code responds. Authentication is via `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY` env var, injected into all containers automatically.
+Test the wechat-cc project end-to-end: build, run 123+ unit tests, then perform a live smoke test that sends a real message through the bridge and verifies Claude Code responds. The project supports two frontends: **Telegram Bot** (production) and **StdinBot** (testing). Authentication is via `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY` env var, injected into all containers automatically.
 
 **Never assume the app works. Always run the end-to-end smoke test.**
 
@@ -104,9 +104,29 @@ echo 'admin_test|Admin|Say hello in one sentence' | cargo run --release 2>&1
 - Check sandbox image exists: `docker images claude-sandbox:latest`
 - If missing, it auto-builds on first run (takes ~1 minute)
 
-### Step 5: Interactive Smoke Test (Optional)
+### Step 5: Telegram Bot Smoke Test (Optional)
 
-For deeper testing, run the app interactively and send multiple messages:
+If `telegram.enabled: true` and `telegram.bot_token` is set in config.yaml, test the Telegram integration:
+
+```bash
+# Ensure ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN is exported
+source .env && export ANTHROPIC_API_KEY
+cargo run --release 2>&1
+```
+
+Then send messages to the bot on Telegram:
+- Send "Hello" — should get a Claude response
+- Send "/help" — should list available commands
+- Send "/status" — should show container info
+
+**Key checks:**
+- Log shows `Using Telegram bot` and `Telegram bot online: @your_bot_name`
+- Your Telegram chat ID must match `admin_wxid` in config.yaml for admin privileges
+- Admin user gets `bridge` network (internet); normal gets `none` (Claude fails silently)
+
+### Step 5b: StdinBot Smoke Test (Alternative)
+
+With `telegram.enabled: false`, test via stdin pipe:
 
 ```bash
 RUST_LOG=info cargo run --release

@@ -1,5 +1,7 @@
 # Test Map: wechat-cc (123 tests)
 
+> **Note:** `telegram_bot.rs` has no unit tests — it's tested via end-to-end smoke tests (Step 5 in SKILL.md).
+
 ## main.rs — Utility Tests (`tests::`)
 
 ### Memory Parsing (`parse_memory`)

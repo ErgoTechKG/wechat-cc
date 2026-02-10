@@ -4,6 +4,7 @@ mod database;
 mod docker_manager;
 mod error;
 mod message_router;
+mod telegram_bot;
 mod wechat_bot;
 
 use std::path::PathBuf;
@@ -17,6 +18,7 @@ use config::get_config;
 use database::Database;
 use docker_manager::{DockerConfig, DockerLimits, DockerManager, DockerNetworkConfig};
 use message_router::MessageRouter;
+use telegram_bot::TelegramBot;
 use wechat_bot::{StdinBot, WeChatBot};
 
 // ============================================
@@ -186,8 +188,14 @@ async fn main() -> Result<()> {
         cfg.admin_wxid.clone(),
     );
 
-    // 10. Start message loop with StdinBot
-    let mut bot = StdinBot::new();
+    // 10. Start bot (Telegram or StdinBot)
+    let mut bot: Box<dyn WeChatBot> = if cfg.telegram.enabled {
+        info!("Using Telegram bot");
+        Box::new(TelegramBot::new(&cfg.telegram))
+    } else {
+        info!("Using StdinBot (pipe mode)");
+        Box::new(StdinBot::new())
+    };
     bot.start().await?;
 
     info!("Docker environment ready. Bot started, waiting for messages...");

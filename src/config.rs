@@ -12,6 +12,7 @@ pub struct Config {
     pub admin_wxid: String,
     pub claude: ClaudeConfig,
     pub docker: DockerConfig,
+    pub telegram: TelegramConfig,
     pub permissions: PermissionsConfig,
     pub session: SessionConfig,
     pub rate_limit: RateLimitConfig,
@@ -53,6 +54,15 @@ pub struct DockerNetwork {
     pub admin: String,
     pub trusted: String,
     pub normal: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(default)]
+pub struct TelegramConfig {
+    /// Enable Telegram bot instead of StdinBot.
+    pub enabled: bool,
+    /// Bot token from @BotFather.
+    pub bot_token: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -100,6 +110,7 @@ impl Default for Config {
             admin_wxid: String::new(),
             claude: ClaudeConfig::default(),
             docker: DockerConfig::default(),
+            telegram: TelegramConfig::default(),
             permissions: PermissionsConfig::default(),
             session: SessionConfig::default(),
             rate_limit: RateLimitConfig::default(),
@@ -149,6 +160,15 @@ impl Default for DockerNetwork {
             admin: "bridge".into(),
             trusted: "claude-limited".into(),
             normal: "none".into(),
+        }
+    }
+}
+
+impl Default for TelegramConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bot_token: String::new(),
         }
     }
 }

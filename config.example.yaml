@@ -39,6 +39,17 @@ docker:
     trusted: "claude-limited"    # trusted: 受限网络（仅 API 访问）
     normal: "none"               # normal: 完全断网
 
+# ============================================
+# Telegram Bot 配置（替代微信前端）
+# ============================================
+# 使用方法：
+#   1. 在 Telegram 找 @BotFather，发送 /newbot 创建机器人
+#   2. 复制 bot token 填入下方
+#   3. 设置 enabled: true
+telegram:
+  enabled: false
+  bot_token: ""  # 从 @BotFather 获取
+
 # 权限控制
 permissions:
   notify_unauthorized: true

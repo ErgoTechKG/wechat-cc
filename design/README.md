@@ -1,6 +1,7 @@
-# 微信好友 → Claude Code 桥接系统 (Docker 沙箱版)
+# 消息 → Claude Code 桥接系统 (Docker 沙箱版)
 
-每个微信好友拥有独立的 Docker 容器环境，彻底隔离进程、文件系统和网络。
+每个用户拥有独立的 Docker 容器环境，彻底隔离进程、文件系统和网络。
+支持 Telegram Bot 和 stdin 两种前端。
 
 ## 架构
 
@@ -8,18 +9,18 @@
                         ┌─────────────────────────────────────────────┐
                         │              HOST 服务器                      │
                         │                                             │
- 微信好友A ──▶ 微信Bot ──▶│  消息路由 ──▶ Docker Manager                  │
- 微信好友B ──▶ (wechaty)  │      │          │                           │
- 微信好友C ──▶            │      │     ┌────┴──────────────────────┐   │
+ Telegram用户A ─▶ TelegramBot ▶│  消息路由 ──▶ Docker Manager           │
+ Telegram用户B ─▶ (Bot API)    │      │          │                     │
+ Telegram用户C ─▶              │      │     ┌────┴──────────────────┐ │
                         │      │     │  ┌──────────────────────┐  │   │
-                        │      │     │  │ 容器A (wxid_aaa)     │  │   │
+                        │      │     │  │ 容器A (chat_id_aaa)  │  │   │
                         │      │     │  │ Claude Code 进程      │  │   │
                         │      │     │  │ /home/sandbox/workspace│ │   │
                         │      │     │  │ 内存:512M CPU:1核     │  │   │
                         │      │     │  │ 网络:none(断网)       │  │   │
                         │      │     │  └──────────────────────┘  │   │
                         │      │     │  ┌──────────────────────┐  │   │
-                        │      │     │  │ 容器B (wxid_bbb)     │  │   │
+                        │      │     │  │ 容器B (chat_id_bbb)  │  │   │
                         │      │     │  │ Claude Code 进程      │  │   │
                         │      │     │  │ 内存:512M CPU:1核     │  │   │
                         │      │     │  │ 网络:claude-limited   │  │   │
@@ -32,11 +33,12 @@
                         │      │     └────────────────────────────┘   │
                         │      │                                       │
                         │      │     ~/claude-bridge-data/              │
-                        │      │       ├── wxid_aaa/workspace/ (持久化) │
-                        │      │       ├── wxid_bbb/workspace/         │
-                        │      │       └── wxid_ccc/workspace/         │
+                        │      │       ├── chat_id_aaa/workspace/ (持久化)│
+                        │      │       ├── chat_id_bbb/workspace/      │
+                        │      │       └── chat_id_ccc/workspace/      │
                         │      │                                       │
-                        │      │     认证: CLAUDE_CODE_OAUTH_TOKEN 环境变量 │
+                        │      │     认证: ANTHROPIC_API_KEY 或           │
+                        │      │           CLAUDE_CODE_OAUTH_TOKEN 环境变量│
                         └─────────────────────────────────────────────┘
 ```
 
@@ -67,11 +69,17 @@ cargo build --release
 cp config.example.yaml config.yaml
 # 编辑 config.yaml，填入 admin_wxid
 
-# 4. 启动（会自动构建 Docker 镜像）
-export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-xxx  # 或 ANTHROPIC_API_KEY
-cargo run --release
+# 4. 配置 Telegram Bot
+#    在 Telegram 找 @BotFather，发送 /newbot 创建机器人
+#    编辑 config.yaml:
+#      telegram:
+#        enabled: true
+#        bot_token: "YOUR_TOKEN"
+#    设置 admin_wxid 为你的 Telegram chat ID
 
-# 5. 扫码登录微信（接入 wechaty 后）
+# 5. 启动（会自动构建 Docker 镜像）
+export ANTHROPIC_API_KEY=sk-ant-xxx  # 或 CLAUDE_CODE_OAUTH_TOKEN
+cargo run --release
 ```
 
 ## 好友权限等级
@@ -119,6 +127,7 @@ wechat-cc/
 └── src/
     ├── main.rs                # 入口：启动检查 + 消息循环
     ├── config.rs              # YAML 配置加载
+    ├── telegram_bot.rs        # Telegram Bot API (长轮询)
     ├── wechat_bot.rs          # WeChatBot trait + StdinBot
     ├── database.rs            # SQLite：好友/会话/审计/限流
     ├── message_router.rs      # 消息路由 + 14条命令

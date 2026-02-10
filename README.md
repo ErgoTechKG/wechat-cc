@@ -1,31 +1,31 @@
 # WeChat-Claude Code Bridge (Docker Sandbox)
 
-A Rust application that bridges WeChat friends to Claude Code, giving each friend their own isolated Docker container environment. Friends chat via WeChat, and their messages are routed to Claude Code running inside per-user sandboxed containers.
+A Rust application that bridges messaging platforms to Claude Code, giving each user their own isolated Docker container environment. Users chat via **Telegram** (or stdin for testing), and their messages are routed to Claude Code running inside per-user sandboxed containers.
 
 ## Architecture
 
 ```
- WeChat Friend A ──┐
- WeChat Friend B ──┼──▶ WeChat Bot ──▶ MessageRouter ──▶ ClaudeExecutor
- WeChat Friend C ──┘    (wechaty)         │                    │
-                                          │              DockerManager
-                                       SQLite                  │
-                                     friends/           ┌──────┴───────────────────┐
-                                     sessions/          │  ┌────────────────────┐  │
-                                     audit log          │  │ Container A        │  │
-                                                        │  │ 512M / 1CPU / none │  │
-                                                        │  └────────────────────┘  │
-                                                        │  ┌────────────────────┐  │
-                                                        │  │ Container B        │  │
-                                                        │  │ 512M / 1CPU / limited│ │
-                                                        │  └────────────────────┘  │
-                                                        │  ┌────────────────────┐  │
-                                                        │  │ Container C (admin)│  │
-                                                        │  │ 2G / 2CPU / bridge │  │
-                                                        │  └────────────────────┘  │
-                                                        └──────────────────────────┘
+ Telegram User A ──┐
+ Telegram User B ──┼──▶ TelegramBot ──▶ MessageRouter ──▶ ClaudeExecutor
+ Telegram User C ──┘   (Bot API)            │                    │
+                                            │              DockerManager
+                                         SQLite                  │
+                                       friends/           ┌──────┴───────────────────┐
+                                       sessions/          │  ┌────────────────────┐  │
+                                       audit log          │  │ Container A        │  │
+                                                          │  │ 512M / 1CPU / none │  │
+                                                          │  └────────────────────┘  │
+                                                          │  ┌────────────────────┐  │
+                                                          │  │ Container B        │  │
+                                                          │  │ 512M / 1CPU / limited│ │
+                                                          │  └────────────────────┘  │
+                                                          │  ┌────────────────────┐  │
+                                                          │  │ Container C (admin)│  │
+                                                          │  │ 2G / 2CPU / bridge │  │
+                                                          │  └────────────────────┘  │
+                                                          └──────────────────────────┘
 
- Persistent data: ~/claude-bridge-data/<wxid>/workspace/
+ Persistent data: ~/claude-bridge-data/<user_id>/workspace/
  Auth:            CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY (env var → all containers)
 ```
 
@@ -44,12 +44,16 @@ cargo build --release
 
 # 2. Configure
 cp config.example.yaml config.yaml
-# Edit config.yaml -- set admin_wxid at minimum
+# Edit config.yaml:
+#   - Set admin_wxid to your Telegram chat ID
+#   - Set telegram.enabled: true
+#   - Set telegram.bot_token (from @BotFather)
 
 # 3. Build the sandbox Docker image
 cd docker && docker compose build sandbox-base && cd ..
 
-# 4. Run (starts in stdin test mode by default)
+# 4. Run
+export ANTHROPIC_API_KEY=sk-ant-xxx  # or CLAUDE_CODE_OAUTH_TOKEN
 cargo run --release
 ```
 
@@ -84,21 +88,29 @@ cargo run --release
 
 When set, the key is passed into every container automatically.
 
-## WeChat Connection
+## Telegram Bot Setup
 
-WeChat integration uses the **wechaty** ecosystem, which works by scanning a QR code with your personal WeChat account (similar to WeChat Web login). **No WeChat API key is needed.**
+1. Open Telegram, find **@BotFather**, send `/newbot`
+2. Choose a name and username for your bot
+3. Copy the bot token (e.g., `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`)
+4. Set in `config.yaml`:
+   ```yaml
+   telegram:
+     enabled: true
+     bot_token: "YOUR_TOKEN_HERE"
+   ```
+5. Send any message to your bot, check logs for your chat ID, set it as `admin_wxid`
 
-The app defines a pluggable `WeChatBot` trait in `src/wechat_bot.rs`. Currently it ships with `StdinBot` for local testing. To connect to real WeChat:
+The bot uses long-polling (`getUpdates`) — no webhook or public URL needed. Only private text messages are processed; group messages are ignored.
 
-1. Run a **wechaty puppet service** (Node.js process) that handles the WeChat protocol
-2. Implement the `WeChatBot` trait to connect to that puppet via gRPC or HTTP
-3. Swap `StdinBot::new()` for your implementation in `src/main.rs`
+### Pluggable Bot Interface
 
-Other WeChat bot frameworks (itchat, WeChatFerry, etc.) can also work -- just implement the trait.
+The app defines a `WeChatBot` trait in `src/wechat_bot.rs`. Two implementations ship:
 
-### Testing with StdinBot
+- **TelegramBot** (`src/telegram_bot.rs`) — Telegram Bot API via long-polling (production)
+- **StdinBot** (`src/wechat_bot.rs`) — stdin pipe for local testing
 
-Without WeChat, you can test the full pipeline via stdin. Messages use the format:
+Set `telegram.enabled: false` (or omit) to use StdinBot. Messages use the format:
 
 ```
 wxid|nickname|message text
@@ -122,7 +134,9 @@ All settings are in `config.yaml`. See [`config.example.yaml`](config.example.ya
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `admin_wxid` | `""` | WeChat ID of the admin user (**required**) |
+| `admin_wxid` | `""` | Admin user ID — Telegram chat ID or WeChat wxid (**required**) |
+| `telegram.enabled` | `false` | Enable Telegram bot (otherwise uses StdinBot) |
+| `telegram.bot_token` | `""` | Telegram bot token from @BotFather |
 | `claude.timeout` | `120` | Seconds before Claude execution times out |
 | `docker.image` | `claude-sandbox:latest` | Docker image for sandbox containers |
 | `docker.data_dir` | `~/claude-bridge-data` | Persistent data root (each user gets a subdirectory) |
@@ -194,6 +208,7 @@ wechat-cc/
     ├── docker_manager.rs      # Container lifecycle via bollard (Docker API)
     ├── claude_executor.rs     # Claude Code execution in containers
     ├── message_router.rs      # Message routing + 14 commands
+    ├── telegram_bot.rs        # Telegram Bot API (long-polling)
     ├── wechat_bot.rs          # WeChatBot trait + StdinBot for testing
     └── error.rs               # Error types
 ```
@@ -214,7 +229,7 @@ The SQLite database (`data/bridge.db`) stores:
 
 ## Stopping the Service
 
-As the admin, you can control the service directly from WeChat:
+As the admin, you can control the service directly from Telegram (or stdin):
 
 | Command | What it does |
 |---------|-------------|
@@ -223,9 +238,7 @@ As the admin, you can control the service directly from WeChat:
 | `/block <name>` | Block a friend and destroy their container |
 | `/kill <name>` | Kill a friend's running Claude process without stopping their container |
 
-To fully shut down the bridge, stop the server process (`Ctrl+C` or kill the process). This disconnects the WeChat bot -- no messages will be received or processed. Containers are set to `restart: unless-stopped`, so they remain paused until the bridge starts again.
-
-To also revoke the WeChat login from your phone: WeChat -> Settings -> Account Security -> Login Devices -> remove the bot device.
+To fully shut down the bridge, stop the server process (`Ctrl+C` or kill the process). This disconnects the bot -- no messages will be received or processed. Containers are set to `restart: unless-stopped`, so they remain paused until the bridge starts again.
 
 ## Development
 
@@ -233,7 +246,7 @@ To also revoke the WeChat login from your phone: WeChat -> Settings -> Account S
 # Build
 cargo build
 
-# Run tests (16 unit tests)
+# Run tests (123 unit tests)
 cargo test
 
 # Run with debug logging

@@ -1,0 +1,37 @@
+# ============================================
+# 好友沙箱容器镜像
+# 每个微信好友运行在独立的此镜像实例中
+# ============================================
+FROM node:20-slim
+
+LABEL maintainer="wechat-claude-bridge"
+LABEL description="Sandboxed Claude Code environment per WeChat friend"
+
+# 基础工具
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    python3 \
+    python3-pip \
+    jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# 安装 Claude Code CLI
+RUN npm install -g @anthropic-ai/claude-code
+
+# 创建非 root 沙箱用户
+RUN useradd -m -s /bin/bash sandbox \
+    && mkdir -p /home/sandbox/workspace \
+    && chown -R sandbox:sandbox /home/sandbox
+
+# 安全限制：移除 sudo, 限制网络工具
+RUN apt-get purge -y sudo 2>/dev/null; true
+
+# 工作目录
+WORKDIR /home/sandbox/workspace
+
+# 切换到非 root 用户
+USER sandbox
+
+# 默认 shell
+CMD ["/bin/bash"]

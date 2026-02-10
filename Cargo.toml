@@ -1,0 +1,41 @@
+[package]
+name = "wechat-claude-bridge"
+version = "0.1.0"
+edition = "2021"
+description = "WeChat friend -> Claude Code bridge with Docker sandbox isolation"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Docker API
+bollard = "0.18"
+
+# SQLite
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Config
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+anyhow = "1"
+thiserror = "2"
+dirs = "6"
+futures-util = "0.3"
+
+# Async trait support
+async-trait = "0.1"
+
+# Tar archive (for docker build context)
+tar = "0.4"
+
+# QR code display (for WeChat login)
+qr2term = "0.3"

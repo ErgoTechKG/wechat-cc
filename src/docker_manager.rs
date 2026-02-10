@@ -243,10 +243,6 @@ impl DockerManager {
             "{}:/home/sandbox/workspace",
             data_dir.join("workspace").display()
         );
-        let claude_config_bind = format!(
-            "{}:/home/sandbox/.claude",
-            data_dir.join("claude-config").display()
-        );
         let tmpfs_opt = format!("size={}", self.config.limits.tmp_size);
 
         let host_config = HostConfig {
@@ -255,11 +251,15 @@ impl DockerManager {
             nano_cpus: Some(nano_cpus),
             pids_limit: Some(self.config.limits.pids),
 
-            // Tmpfs for /tmp
-            tmpfs: Some(HashMap::from([(
-                "/tmp".to_string(),
-                tmpfs_opt,
-            )])),
+            // Tmpfs mounts:
+            //  /tmp — scratch space
+            //  /home/sandbox — writable home for .claude.json and .claude/ dir
+            //    workspace/ bind mount overlays this for persistent data
+            //    uid=1001,gid=1001 matches the sandbox user inside the container
+            tmpfs: Some(HashMap::from([
+                ("/tmp".to_string(), tmpfs_opt),
+                ("/home/sandbox".to_string(), "size=10m,uid=1001,gid=1001".to_string()),
+            ])),
 
             // Security: read-only rootfs, no-new-privileges, drop ALL caps
             readonly_rootfs: Some(true),
@@ -270,7 +270,7 @@ impl DockerManager {
             network_mode: Some(network),
 
             // Volume mounts
-            binds: Some(vec![workspace_bind, claude_config_bind]),
+            binds: Some(vec![workspace_bind]),
 
             // Restart policy
             restart_policy: Some(RestartPolicy {
@@ -290,10 +290,17 @@ impl DockerManager {
 
         let env_wxid = format!("WXID={}", wxid);
 
-        // Only pass ANTHROPIC_API_KEY if set. When using Claude Code Max
-        // (subscription), auth is handled via OAuth and stored in the
-        // mounted ~/.claude volume — no API key needed.
+        // Auth: pass CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`)
+        // or ANTHROPIC_API_KEY into the container. OAuth token is preferred
+        // for Claude Code Max subscribers.
         let mut env_vars = vec![env_wxid.as_str()];
+        let env_oauth_token = std::env::var("CLAUDE_CODE_OAUTH_TOKEN")
+            .ok()
+            .filter(|k| !k.is_empty())
+            .map(|k| format!("CLAUDE_CODE_OAUTH_TOKEN={}", k));
+        if let Some(ref token_env) = env_oauth_token {
+            env_vars.push(token_env.as_str());
+        }
         let env_api_key = std::env::var("ANTHROPIC_API_KEY")
             .ok()
             .filter(|k| !k.is_empty())
@@ -328,6 +335,9 @@ impl DockerManager {
         // Fix volume directory permissions
         self.fix_permissions(wxid).await;
 
+        // Prepare ~/.claude.json and ~/.claude/ dir for Claude Code auth
+        self.prepare_claude_home(wxid).await;
+
         Ok(())
     }
 
@@ -338,9 +348,8 @@ impl DockerManager {
             Err(_) => return,
         };
 
-        // Ensure subdirectories exist
+        // Ensure workspace subdirectory exists
         let _ = fs::create_dir_all(data_dir.join("workspace")).await;
-        let _ = fs::create_dir_all(data_dir.join("claude-config")).await;
 
         // Use root exec inside the container to chown
         let name = self.container_name(wxid);
@@ -352,13 +361,34 @@ impl DockerManager {
                     "-R",
                     "sandbox:sandbox",
                     "/home/sandbox/workspace",
-                    "/home/sandbox/.claude",
                 ],
                 true, // as root
             )
             .await
         {
             debug!("fix_permissions failed (container may not be ready): {}", e);
+        }
+    }
+
+    /// Prepare the sandbox home directory for Claude Code:
+    ///  - Write ~/.claude.json with hasCompletedOnboarding to skip onboarding
+    ///  - Create ~/.claude/ directory for Claude Code config/cache
+    /// The /home/sandbox tmpfs is owned by sandbox (uid=1001), so no chown needed.
+    async fn prepare_claude_home(&self, wxid: &str) {
+        let name = self.container_name(wxid);
+        let setup_cmd = concat!(
+            "mkdir -p /home/sandbox/.claude && ",
+            "echo '{\"hasCompletedOnboarding\":true}' > /home/sandbox/.claude.json"
+        );
+        if let Err(e) = self
+            .exec_in_container(
+                &name,
+                vec!["sh", "-c", setup_cmd],
+                false, // as sandbox user (tmpfs owned by sandbox)
+            )
+            .await
+        {
+            debug!("prepare_claude_home failed: {}", e);
         }
     }
 
@@ -413,13 +443,19 @@ impl DockerManager {
 
         let cmd_refs: Vec<&str> = cmd.iter().map(|s| s.as_str()).collect();
 
-        // Only pass ANTHROPIC_API_KEY if set. Claude Code Max users
-        // authenticate via OAuth stored in ~/.claude (mounted volume).
-        let env_api_key = std::env::var("ANTHROPIC_API_KEY")
-            .ok()
-            .filter(|k| !k.is_empty())
-            .map(|k| format!("ANTHROPIC_API_KEY={}", k));
-        let env_refs: Vec<&str> = env_api_key.iter().map(|s| s.as_str()).collect();
+        // Pass auth env vars into exec: CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY
+        let mut env_strings: Vec<String> = Vec::new();
+        if let Ok(token) = std::env::var("CLAUDE_CODE_OAUTH_TOKEN") {
+            if !token.is_empty() {
+                env_strings.push(format!("CLAUDE_CODE_OAUTH_TOKEN={}", token));
+            }
+        }
+        if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+            if !key.is_empty() {
+                env_strings.push(format!("ANTHROPIC_API_KEY={}", key));
+            }
+        }
+        let env_refs: Vec<&str> = env_strings.iter().map(|s| s.as_str()).collect();
 
         let exec_opts = CreateExecOptions {
             cmd: Some(cmd_refs),

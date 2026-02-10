@@ -26,7 +26,7 @@ A Rust application that bridges WeChat friends to Claude Code, giving each frien
                                                         └──────────────────────────┘
 
  Persistent data: ~/claude-bridge-data/<wxid>/workspace/
-                  ~/claude-bridge-data/<wxid>/claude-config/
+ Auth:            CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY (env var → all containers)
 ```
 
 ## Prerequisites
@@ -55,31 +55,34 @@ cargo run --release
 
 ## Authentication (Claude Code)
 
-Claude Code supports two authentication modes. This bridge works with **either** -- choose whichever fits your setup.
+Authentication is passed to all containers via environment variables. Set up once on the host, and every container inherits the credentials automatically.
 
-### Option A: Claude Code Max (Subscription)
+### Option A: Claude Code Max (Subscription) -- Recommended
 
-No API key needed. Claude Code authenticates via OAuth, and the session is stored in `~/.claude/` inside each container (persisted via the `claude-config/` volume mount).
-
-**First-time setup per user**: the first time Claude runs in a new container, it needs to complete an OAuth login:
+Generate a long-lived OAuth token on the host:
 
 ```bash
-docker exec -it claude-friend-<wxid> claude --print "hello"
-# Complete the OAuth flow in browser, then the session is saved
+claude setup-token
+# Follow the interactive prompts, then copy the token
 ```
 
-Subsequent calls reuse the stored session automatically.
+Start the bridge with the token:
+
+```bash
+export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-xxx
+cargo run --release
+```
+
+The token is injected into every container. No per-user login needed.
 
 ### Option B: Anthropic API Key
-
-Set the environment variable before starting the bridge:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-xxx
 cargo run --release
 ```
 
-When set, the key is passed into every container automatically. When not set, it is simply omitted and containers use whatever auth is in their `~/.claude/` config.
+When set, the key is passed into every container automatically.
 
 ## WeChat Connection
 
@@ -197,10 +200,9 @@ wechat-cc/
 
 ## Data Persistence
 
-Each friend's data is stored in `~/claude-bridge-data/<wxid>/`:
+Each friend's data is stored in `~/claude-bridge-data/<wxid>/workspace/` (code, files, etc.).
 
-- `workspace/` -- the friend's working directory (code, files, etc.)
-- `claude-config/` -- Claude Code auth and session cache (`~/.claude/` inside the container)
+Authentication is passed via environment variables (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`), injected into every container at startup. No per-user auth data is stored.
 
 Data survives container destruction. When a container is rebuilt, volumes are re-mounted automatically.
 

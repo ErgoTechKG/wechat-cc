@@ -32,11 +32,11 @@
                         │      │     └────────────────────────────┘   │
                         │      │                                       │
                         │      │     ~/claude-bridge-data/              │
-                        │      │       ├── wxid_aaa/                   │
-                        │      │       │   ├── workspace/  (持久化)     │
-                        │      │       │   └── claude-config/          │
-                        │      │       ├── wxid_bbb/                   │
-                        │      │       └── wxid_ccc/                   │
+                        │      │       ├── wxid_aaa/workspace/ (持久化) │
+                        │      │       ├── wxid_bbb/workspace/         │
+                        │      │       └── wxid_ccc/workspace/         │
+                        │      │                                       │
+                        │      │     认证: CLAUDE_CODE_OAUTH_TOKEN 环境变量 │
                         └─────────────────────────────────────────────┘
 ```
 
@@ -56,23 +56,22 @@
 ```bash
 # 1. 前提条件
 #    - Docker 已安装并运行
-#    - Node.js 20+
-#    - Claude Code CLI 已安装 (npm i -g @anthropic-ai/claude-code)
-#    - ANTHROPIC_API_KEY 环境变量已设置
+#    - Rust 1.70+ (with cargo)
+#    - Claude Code 认证 Token（运行 `claude setup-token` 获取）
 
 # 2. 安装
-git clone <repo> && cd wechat-claude-bridge
-npm install
+git clone <repo> && cd wechat-cc
+cargo build --release
 
 # 3. 配置
 cp config.example.yaml config.yaml
 # 编辑 config.yaml，填入 admin_wxid
 
 # 4. 启动（会自动构建 Docker 镜像）
-export ANTHROPIC_API_KEY=sk-ant-xxx
-npm start
+export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-xxx  # 或 ANTHROPIC_API_KEY
+cargo run --release
 
-# 5. 扫码登录微信
+# 5. 扫码登录微信（接入 wechaty 后）
 ```
 
 ## 好友权限等级
@@ -111,26 +110,42 @@ npm start
 ## 文件结构
 
 ```
-wechat-claude-bridge/
+wechat-cc/
+├── Cargo.toml                 # Rust 依赖
 ├── config.example.yaml        # 配置模板
-├── package.json
 ├── docker/
 │   ├── Dockerfile.sandbox     # 沙箱容器镜像
 │   └── docker-compose.yaml    # 镜像构建用
 └── src/
-    ├── index.js               # 入口：微信Bot + 启动检查
-    ├── config.js              # 配置加载
-    ├── logger.js              # 日志
-    ├── database.js            # SQLite：好友/会话/审计
-    ├── message-router.js      # 消息路由 + 命令系统
-    ├── docker-manager.js      # 容器生命周期管理
-    └── claude-executor.js     # Claude Code 执行(通过Docker)
+    ├── main.rs                # 入口：启动检查 + 消息循环
+    ├── config.rs              # YAML 配置加载
+    ├── wechat_bot.rs          # WeChatBot trait + StdinBot
+    ├── database.rs            # SQLite：好友/会话/审计/限流
+    ├── message_router.rs      # 消息路由 + 14条命令
+    ├── docker_manager.rs      # 容器生命周期管理
+    ├── claude_executor.rs     # Claude Code 执行(通过Docker)
+    └── error.rs               # 错误类型
+```
+
+## 认证方式
+
+通过环境变量传递认证信息到所有容器，宿主机设置一次即可。
+
+**方式一（推荐）：Claude Code Max 订阅**
+```bash
+claude setup-token  # 生成长期 OAuth Token
+export CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-xxx
+cargo run --release
+```
+
+**方式二：API Key**
+```bash
+export ANTHROPIC_API_KEY=sk-ant-xxx
+cargo run --release
 ```
 
 ## 数据持久化
 
-每个好友的数据保存在 `~/claude-bridge-data/<wxid>/`：
-- `workspace/` — 好友的工作区（代码、文件等）
-- `claude-config/` — Claude 会话缓存
+每个好友的数据保存在 `~/claude-bridge-data/<wxid>/workspace/`（代码、文件等）。
 
 容器销毁后数据保留，重建容器时自动挂载。

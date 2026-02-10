@@ -13,6 +13,18 @@ use crate::wechat_bot::Contact;
 // Helpers
 // ============================================
 
+/// Truncate a string to at most `max_bytes` bytes at a valid UTF-8 char boundary.
+fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Permission level numeric value for comparison.
 fn perm_level(perm: &str) -> u8 {
     match perm {
@@ -95,7 +107,7 @@ impl MessageRouter {
             "收到消息 [{}({})]: {}",
             dn,
             contact.wxid,
-            &message[..message.len().min(100)]
+            truncate_str(message, 100)
         );
         let audit_content = if config.logging.log_message_content {
             message
@@ -142,7 +154,7 @@ impl MessageRouter {
                     &contact.wxid,
                     Some(dn),
                     "out",
-                    Some(&response[..response.len().min(200)]),
+                    Some(truncate_str(&response, 200)),
                     None,
                 );
                 return Some(response);
@@ -166,10 +178,10 @@ impl MessageRouter {
             &contact.wxid,
             Some(dn),
             "out",
-            Some(&response[..response.len().min(500)]),
+            Some(truncate_str(&response, 500)),
             None,
         );
-        info!("回复 [{}]: {}...", dn, &response[..response.len().min(100)]);
+        info!("回复 [{}]: {}...", dn, truncate_str(&response, 100));
 
         Some(response)
     }
@@ -603,7 +615,7 @@ impl MessageRouter {
         for pattern in &config.security.blocked_patterns {
             if let Ok(re) = Regex::new(&format!("(?i){}", pattern)) {
                 if re.is_match(message) {
-                    warn!("安全拦截: {}", &message[..message.len().min(100)]);
+                    warn!("安全拦截: {}", truncate_str(message, 100));
                     return Some("消息包含不允许的操作".to_string());
                 }
             }
@@ -631,7 +643,7 @@ fn format_logs(logs: &[AuditEntry]) -> String {
                 .and_then(|t| t.split(' ').nth(1))
                 .unwrap_or(l.timestamp.as_deref().unwrap_or(""));
             let nickname = l.nickname.as_deref().unwrap_or("");
-            let msg = l.message.as_deref().map(|m| &m[..m.len().min(60)]).unwrap_or("");
+            let msg = l.message.as_deref().map(|m| truncate_str(m, 60)).unwrap_or("");
             format!("{} [{}] {}: {}", dir, time, nickname, msg)
         })
         .collect::<Vec<_>>()
@@ -651,5 +663,237 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1}KB", bytes as f64 / KB as f64)
     } else {
         format!("{}B", bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================
+    // perm_level tests
+    // ============================================
+
+    #[test]
+    fn perm_level_admin_is_highest() {
+        assert_eq!(perm_level("admin"), 3);
+    }
+
+    #[test]
+    fn perm_level_trusted_is_middle() {
+        assert_eq!(perm_level("trusted"), 2);
+    }
+
+    #[test]
+    fn perm_level_normal_is_low() {
+        assert_eq!(perm_level("normal"), 1);
+    }
+
+    #[test]
+    fn perm_level_unknown_is_zero() {
+        assert_eq!(perm_level("blocked"), 0);
+        assert_eq!(perm_level(""), 0);
+        assert_eq!(perm_level("superadmin"), 0);
+        assert_eq!(perm_level("ADMIN"), 0); // case sensitive
+    }
+
+    // ============================================
+    // display_name tests
+    // ============================================
+
+    #[test]
+    fn display_name_prefers_remark_name() {
+        let contact = Contact {
+            wxid: "wx_001".into(),
+            nickname: "Nick".into(),
+            remark_name: "Remark".into(),
+        };
+        assert_eq!(display_name(&contact), "Remark");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_nickname() {
+        let contact = Contact {
+            wxid: "wx_001".into(),
+            nickname: "Nick".into(),
+            remark_name: String::new(),
+        };
+        assert_eq!(display_name(&contact), "Nick");
+    }
+
+    #[test]
+    fn display_name_falls_back_to_wxid() {
+        let contact = Contact {
+            wxid: "wx_001".into(),
+            nickname: String::new(),
+            remark_name: String::new(),
+        };
+        assert_eq!(display_name(&contact), "wx_001");
+    }
+
+    #[test]
+    fn display_name_unicode_nickname() {
+        let contact = Contact {
+            wxid: "wx_001".into(),
+            nickname: "张三李四".into(),
+            remark_name: String::new(),
+        };
+        assert_eq!(display_name(&contact), "张三李四");
+    }
+
+    #[test]
+    fn display_name_emoji_remark() {
+        let contact = Contact {
+            wxid: "wx_001".into(),
+            nickname: "Name".into(),
+            remark_name: "🎉 Party Friend".into(),
+        };
+        assert_eq!(display_name(&contact), "🎉 Party Friend");
+    }
+
+    // ============================================
+    // format_bytes tests
+    // ============================================
+
+    #[test]
+    fn format_bytes_zero() {
+        assert_eq!(format_bytes(0), "0B");
+    }
+
+    #[test]
+    fn format_bytes_bytes_range() {
+        assert_eq!(format_bytes(1), "1B");
+        assert_eq!(format_bytes(1023), "1023B");
+    }
+
+    #[test]
+    fn format_bytes_kilobytes() {
+        assert_eq!(format_bytes(1024), "1.0KB");
+        assert_eq!(format_bytes(1536), "1.5KB");
+    }
+
+    #[test]
+    fn format_bytes_megabytes() {
+        assert_eq!(format_bytes(1024 * 1024), "1.0MB");
+        assert_eq!(format_bytes(512 * 1024 * 1024), "512.0MB");
+    }
+
+    #[test]
+    fn format_bytes_gigabytes() {
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0GB");
+        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.0GB");
+    }
+
+    #[test]
+    fn format_bytes_exact_boundary() {
+        assert_eq!(format_bytes(1024), "1.0KB");
+        assert_eq!(format_bytes(1024 * 1024), "1.0MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.0GB");
+    }
+
+    // ============================================
+    // format_logs tests
+    // ============================================
+
+    #[test]
+    fn format_logs_empty() {
+        let logs: Vec<AuditEntry> = vec![];
+        assert_eq!(format_logs(&logs), "暂无日志");
+    }
+
+    #[test]
+    fn format_logs_single_incoming() {
+        let logs = vec![AuditEntry {
+            id: 1,
+            wxid: "wx_001".into(),
+            nickname: Some("Alice".into()),
+            direction: "in".into(),
+            message: Some("hello".into()),
+            claude_session: None,
+            timestamp: Some("2024-01-01 12:30:00".into()),
+        }];
+        let result = format_logs(&logs);
+        assert!(result.contains("📩"));
+        assert!(result.contains("12:30:00"));
+        assert!(result.contains("Alice"));
+        assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn format_logs_outgoing() {
+        let logs = vec![AuditEntry {
+            id: 1,
+            wxid: "wx_001".into(),
+            nickname: Some("Bot".into()),
+            direction: "out".into(),
+            message: Some("response".into()),
+            claude_session: None,
+            timestamp: Some("2024-01-01 12:30:00".into()),
+        }];
+        let result = format_logs(&logs);
+        assert!(result.contains("📤"));
+    }
+
+    #[test]
+    fn format_logs_no_timestamp() {
+        let logs = vec![AuditEntry {
+            id: 1,
+            wxid: "wx_001".into(),
+            nickname: Some("Alice".into()),
+            direction: "in".into(),
+            message: Some("hello".into()),
+            claude_session: None,
+            timestamp: None,
+        }];
+        let result = format_logs(&logs);
+        assert!(result.contains("Alice"));
+    }
+
+    #[test]
+    fn format_logs_no_nickname() {
+        let logs = vec![AuditEntry {
+            id: 1,
+            wxid: "wx_001".into(),
+            nickname: None,
+            direction: "in".into(),
+            message: Some("hello".into()),
+            claude_session: None,
+            timestamp: Some("2024-01-01 12:30:00".into()),
+        }];
+        let result = format_logs(&logs);
+        assert!(result.contains("hello"));
+    }
+
+    #[test]
+    fn format_logs_long_message_truncated() {
+        let long_msg = "x".repeat(200);
+        let logs = vec![AuditEntry {
+            id: 1,
+            wxid: "wx_001".into(),
+            nickname: Some("Alice".into()),
+            direction: "in".into(),
+            message: Some(long_msg),
+            claude_session: None,
+            timestamp: Some("2024-01-01 12:30:00".into()),
+        }];
+        let result = format_logs(&logs);
+        // message is truncated to 60 chars in format_logs
+        assert!(result.len() < 200);
+    }
+
+    #[test]
+    fn format_logs_unicode_message() {
+        let logs = vec![AuditEntry {
+            id: 1,
+            wxid: "wx_001".into(),
+            nickname: Some("张三".into()),
+            direction: "in".into(),
+            message: Some("你好世界！这是一条测试消息。".into()),
+            claude_session: None,
+            timestamp: Some("2024-01-01 12:30:00".into()),
+        }];
+        let result = format_logs(&logs);
+        assert!(result.contains("张三"));
+        assert!(result.contains("你好世界"));
     }
 }

@@ -1595,6 +1595,7 @@ dependencies = [
  "regex",
  "rusqlite",
  "serde",
+ "serde_json",
  "serde_yaml",
  "tar",
  "thiserror",

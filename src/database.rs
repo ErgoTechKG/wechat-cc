@@ -10,6 +10,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 // ============================================
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Friend {
     pub wxid: String,
     pub nickname: Option<String>,
@@ -21,6 +22,7 @@ pub struct Friend {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Session {
     pub id: String,
     pub wxid: String,
@@ -31,6 +33,7 @@ pub struct Session {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct AuditEntry {
     pub id: i64,
     pub wxid: String,
@@ -170,16 +173,18 @@ impl Database {
         notes: Option<&str>,
     ) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
-        let perm = permission.unwrap_or("normal");
+        // For INSERT, default to "normal" if no permission specified.
+        // For UPDATE (ON CONFLICT), pass NULL so COALESCE preserves existing permission.
+        let insert_perm = permission.unwrap_or("normal");
         conn.execute(
             "INSERT INTO friends (wxid, nickname, remark_name, permission, added_by, notes)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
              ON CONFLICT(wxid) DO UPDATE SET
-               nickname    = COALESCE(excluded.nickname, nickname),
-               remark_name = COALESCE(excluded.remark_name, remark_name),
-               permission  = COALESCE(excluded.permission, permission),
-               notes       = COALESCE(excluded.notes, notes)",
-            params![wxid, nickname, remark_name, perm, added_by, notes],
+               nickname    = COALESCE(excluded.nickname, friends.nickname),
+               remark_name = COALESCE(excluded.remark_name, friends.remark_name),
+               permission  = COALESCE(?7, friends.permission),
+               notes       = COALESCE(excluded.notes, friends.notes)",
+            params![wxid, nickname, remark_name, insert_perm, added_by, notes, permission],
         )?;
         Ok(())
     }
@@ -225,6 +230,7 @@ impl Database {
         Ok(friends)
     }
 
+    #[allow(dead_code)]
     pub fn friend_list_by_permission(&self, permission: &str) -> anyhow::Result<Vec<Friend>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -248,6 +254,7 @@ impl Database {
         Ok(friends)
     }
 
+    #[allow(dead_code)]
     pub fn friend_remove(&self, wxid: &str) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM friends WHERE wxid = ?", params![wxid])?;
@@ -285,7 +292,7 @@ impl Database {
     pub fn session_get_active(&self, wxid: &str) -> anyhow::Result<Option<Session>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, wxid, claude_session, created_at, last_active, message_count FROM sessions WHERE wxid = ? ORDER BY last_active DESC LIMIT 1",
+            "SELECT id, wxid, claude_session, created_at, last_active, message_count FROM sessions WHERE wxid = ? ORDER BY last_active DESC, rowid DESC LIMIT 1",
         )?;
         let row = stmt
             .query_row(params![wxid], |row| {
@@ -347,7 +354,7 @@ impl Database {
     pub fn session_clean_expired(&self, expire_minutes: i64) -> anyhow::Result<usize> {
         let conn = self.conn.lock().unwrap();
         let deleted = conn.execute(
-            "DELETE FROM sessions WHERE last_active < datetime('now', '-' || ? || ' minutes')",
+            "DELETE FROM sessions WHERE last_active <= datetime('now', '-' || ? || ' minutes')",
             params![expire_minutes],
         )?;
         Ok(deleted)
@@ -606,5 +613,333 @@ mod tests {
         let r = db.rate_limit_check_and_increment("wx_r", 2, 100).unwrap();
         assert!(!r.allowed);
         assert!(r.reason.is_some());
+    }
+
+    // ============================================
+    // NEW: Rate limit boundary edge cases
+    // ============================================
+
+    #[test]
+    fn rate_limit_daily_boundary() {
+        let db = test_db();
+        // Daily limit of 3, per-minute limit of 100 (high so we don't hit it)
+        for _ in 0..3 {
+            let r = db.rate_limit_check_and_increment("wx_day", 100, 3).unwrap();
+            assert!(r.allowed);
+        }
+        // 4th should be blocked by daily limit
+        let r = db.rate_limit_check_and_increment("wx_day", 100, 3).unwrap();
+        assert!(!r.allowed);
+        assert!(r.reason.as_deref().unwrap().contains("Daily"));
+    }
+
+    #[test]
+    fn rate_limit_per_minute_reason_message() {
+        let db = test_db();
+        // Hit the per-minute limit
+        let _ = db.rate_limit_check_and_increment("wx_pm", 1, 100).unwrap();
+        let r = db.rate_limit_check_and_increment("wx_pm", 1, 100).unwrap();
+        assert!(!r.allowed);
+        assert!(r.reason.as_deref().unwrap().contains("Too many"));
+    }
+
+    #[test]
+    fn rate_limit_independent_users() {
+        let db = test_db();
+        // User A hits limit
+        let _ = db.rate_limit_check_and_increment("wx_aa", 1, 100).unwrap();
+        let r = db.rate_limit_check_and_increment("wx_aa", 1, 100).unwrap();
+        assert!(!r.allowed);
+
+        // User B should still be allowed
+        let r = db.rate_limit_check_and_increment("wx_bb", 1, 100).unwrap();
+        assert!(r.allowed);
+    }
+
+    #[test]
+    fn rate_limit_zero_limits() {
+        let db = test_db();
+        // Zero per-minute: first request blocked immediately
+        let r = db.rate_limit_check_and_increment("wx_zero", 0, 100).unwrap();
+        // Since minute_count is None (first check), 0 >= 0 is false in the code.
+        // Actually: minute_count is None, so the if let Some block is skipped.
+        // Then day_total is 0, 0 >= 100 is false. Then it increments.
+        // So the first request with max_per_minute=0 is actually ALLOWED.
+        assert!(r.allowed);
+        // Second request: now minute_count = 1, 1 >= 0 is true -> blocked
+        let r = db.rate_limit_check_and_increment("wx_zero", 0, 100).unwrap();
+        assert!(!r.allowed);
+    }
+
+    #[test]
+    fn rate_limit_cleanup_runs() {
+        let db = test_db();
+        let _ = db.rate_limit_check_and_increment("wx_cl", 10, 100).unwrap();
+        // cleanup should not error even on fresh data
+        let deleted = db.rate_limit_cleanup().unwrap();
+        // Fresh entries are not older than 1 day, so none deleted
+        assert_eq!(deleted, 0);
+    }
+
+    // ============================================
+    // NEW: Unicode/special characters in DB
+    // ============================================
+
+    #[test]
+    fn friend_unicode_wxid() {
+        let db = test_db();
+        db.friend_upsert("wxid_中文", Some("中文用户"), None, Some("normal"), None, None)
+            .unwrap();
+        let f = db.friend_get("wxid_中文").unwrap().unwrap();
+        assert_eq!(f.wxid, "wxid_中文");
+        assert_eq!(f.nickname.as_deref(), Some("中文用户"));
+    }
+
+    #[test]
+    fn friend_emoji_nickname() {
+        let db = test_db();
+        db.friend_upsert("wx_emoji", Some("🎉🎊🎈"), None, None, None, None)
+            .unwrap();
+        let f = db.friend_get("wx_emoji").unwrap().unwrap();
+        assert_eq!(f.nickname.as_deref(), Some("🎉🎊🎈"));
+    }
+
+    #[test]
+    fn friend_special_chars_in_notes() {
+        let db = test_db();
+        let notes = "Line1\nLine2\tTab\r\nCRLF\0Null'Quote\"Double";
+        db.friend_upsert("wx_special", Some("Test"), None, None, None, Some(notes))
+            .unwrap();
+        let f = db.friend_get("wx_special").unwrap().unwrap();
+        assert_eq!(f.notes.as_deref(), Some(notes));
+    }
+
+    #[test]
+    fn friend_empty_wxid() {
+        let db = test_db();
+        // Empty wxid is technically valid in the schema
+        db.friend_upsert("", Some("Empty"), None, None, None, None)
+            .unwrap();
+        let f = db.friend_get("").unwrap().unwrap();
+        assert_eq!(f.wxid, "");
+    }
+
+    #[test]
+    fn friend_very_long_nickname() {
+        let db = test_db();
+        let long_name = "A".repeat(10000);
+        db.friend_upsert("wx_long", Some(&long_name), None, None, None, None)
+            .unwrap();
+        let f = db.friend_get("wx_long").unwrap().unwrap();
+        assert_eq!(f.nickname.as_deref(), Some(long_name.as_str()));
+    }
+
+    // ============================================
+    // NEW: Friend upsert idempotency / COALESCE behavior
+    // ============================================
+
+    #[test]
+    fn friend_upsert_preserves_fields_on_conflict() {
+        let db = test_db();
+        // First insert with all fields
+        db.friend_upsert("wx_up", Some("Original"), Some("Remark"), Some("trusted"), Some("admin_wx"), Some("initial notes"))
+            .unwrap();
+
+        // Upsert with only wxid and nickname changed
+        db.friend_upsert("wx_up", Some("Updated"), None, None, None, None)
+            .unwrap();
+
+        let f = db.friend_get("wx_up").unwrap().unwrap();
+        assert_eq!(f.nickname.as_deref(), Some("Updated"));
+        // COALESCE should preserve remark_name since we passed None (NULL)
+        // But actually in the SQL: COALESCE(excluded.remark_name, remark_name)
+        // excluded.remark_name is NULL (we passed None), so it keeps original
+        assert_eq!(f.remark_name.as_deref(), Some("Remark"));
+    }
+
+    #[test]
+    fn friend_upsert_overwrites_with_explicit_values() {
+        let db = test_db();
+        db.friend_upsert("wx_ow", Some("Original"), Some("OldRemark"), Some("normal"), None, None)
+            .unwrap();
+        db.friend_upsert("wx_ow", Some("New"), Some("NewRemark"), Some("admin"), None, None)
+            .unwrap();
+
+        let f = db.friend_get("wx_ow").unwrap().unwrap();
+        assert_eq!(f.nickname.as_deref(), Some("New"));
+        assert_eq!(f.remark_name.as_deref(), Some("NewRemark"));
+        assert_eq!(f.permission, "admin");
+    }
+
+    // ============================================
+    // NEW: Permission constraint validation
+    // ============================================
+
+    #[test]
+    fn friend_invalid_permission_rejected() {
+        let db = test_db();
+        // The CHECK constraint only allows 'admin','trusted','normal','blocked'
+        let result = db.friend_upsert("wx_bad", Some("Bad"), None, Some("superuser"), None, None);
+        assert!(result.is_err());
+    }
+
+    // ============================================
+    // NEW: Session edge cases
+    // ============================================
+
+    #[test]
+    fn session_multiple_sessions_returns_latest() {
+        let db = test_db();
+        db.friend_upsert("wx_multi", Some("Multi"), None, None, None, None)
+            .unwrap();
+        db.session_create("sess_old", "wx_multi", None).unwrap();
+        // Touch the old session so it has an earlier last_active
+        db.session_touch("sess_old").unwrap();
+
+        db.session_create("sess_new", "wx_multi", Some("claude_xyz")).unwrap();
+
+        // session_get_active returns the one with latest last_active
+        let s = db.session_get_active("wx_multi").unwrap().unwrap();
+        assert_eq!(s.id, "sess_new");
+    }
+
+    #[test]
+    fn session_get_active_nonexistent_user() {
+        let db = test_db();
+        let s = db.session_get_active("wx_nonexistent").unwrap();
+        assert!(s.is_none());
+    }
+
+    #[test]
+    fn session_clean_expired_zero_minutes() {
+        let db = test_db();
+        db.friend_upsert("wx_exp", Some("Exp"), None, None, None, None)
+            .unwrap();
+        db.session_create("sess_exp", "wx_exp", None).unwrap();
+
+        // With 0 minutes expiry, everything should be expired
+        let deleted = db.session_clean_expired(0).unwrap();
+        assert_eq!(deleted, 1);
+
+        // Verify it's gone
+        let s = db.session_get_active("wx_exp").unwrap();
+        assert!(s.is_none());
+    }
+
+    #[test]
+    fn session_clean_expired_large_window_keeps_sessions() {
+        let db = test_db();
+        db.friend_upsert("wx_keep", Some("Keep"), None, None, None, None)
+            .unwrap();
+        db.session_create("sess_keep", "wx_keep", None).unwrap();
+
+        // With a huge window, nothing should expire
+        let deleted = db.session_clean_expired(999999).unwrap();
+        assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn session_touch_increments_count_multiple_times() {
+        let db = test_db();
+        db.friend_upsert("wx_touch", Some("Touch"), None, None, None, None)
+            .unwrap();
+        db.session_create("sess_t", "wx_touch", None).unwrap();
+
+        for _ in 0..5 {
+            db.session_touch("sess_t").unwrap();
+        }
+
+        let s = db.session_get_active("wx_touch").unwrap().unwrap();
+        assert_eq!(s.message_count, 5);
+    }
+
+    // ============================================
+    // NEW: Audit log edge cases
+    // ============================================
+
+    #[test]
+    fn audit_log_with_null_message() {
+        let db = test_db();
+        db.audit_log("wx_null", Some("Test"), "in", None, None)
+            .unwrap();
+        let logs = db.audit_get_by_user("wx_null", 10).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].message.is_none());
+    }
+
+    #[test]
+    fn audit_log_with_very_long_message() {
+        let db = test_db();
+        let long_msg = "x".repeat(100_000);
+        db.audit_log("wx_long", Some("Test"), "in", Some(&long_msg), None)
+            .unwrap();
+        let logs = db.audit_get_by_user("wx_long", 10).unwrap();
+        assert_eq!(logs[0].message.as_ref().unwrap().len(), 100_000);
+    }
+
+    #[test]
+    fn audit_get_recent_with_limit() {
+        let db = test_db();
+        for i in 0..10 {
+            db.audit_log("wx_lim", Some("Test"), "in", Some(&format!("msg_{}", i)), None)
+                .unwrap();
+        }
+        let logs = db.audit_get_recent(3).unwrap();
+        assert_eq!(logs.len(), 3);
+    }
+
+    #[test]
+    fn audit_direction_constraint() {
+        let db = test_db();
+        // Valid directions: 'in' and 'out'
+        db.audit_log("wx_dir", None, "in", None, None).unwrap();
+        db.audit_log("wx_dir", None, "out", None, None).unwrap();
+
+        // Invalid direction should fail the CHECK constraint
+        let result = db.audit_log("wx_dir", None, "invalid", None, None);
+        assert!(result.is_err());
+    }
+
+    // ============================================
+    // NEW: friend_find_by_nickname edge cases
+    // ============================================
+
+    #[test]
+    fn friend_find_by_nickname_sql_wildcard() {
+        let db = test_db();
+        db.friend_upsert("wx_wild", Some("100%_complete"), None, None, None, None)
+            .unwrap();
+        db.friend_upsert("wx_other", Some("nothing special"), None, None, None, None)
+            .unwrap();
+
+        // The % in "100%" is treated as a SQL wildcard by the LIKE pattern
+        // because it's embedded directly into the pattern. This is a potential
+        // issue -- searching for "100%" will match more broadly than expected.
+        let matches = db.friend_find_by_nickname("100%").unwrap();
+        // Should match at least the one with "100%_complete"
+        assert!(!matches.is_empty());
+    }
+
+    #[test]
+    fn friend_find_by_nickname_empty_search() {
+        let db = test_db();
+        db.friend_upsert("wx_e1", Some("Alice"), None, None, None, None)
+            .unwrap();
+        db.friend_upsert("wx_e2", Some("Bob"), None, None, None, None)
+            .unwrap();
+
+        // Empty string with LIKE %% should match everything
+        let matches = db.friend_find_by_nickname("").unwrap();
+        assert_eq!(matches.len(), 2);
+    }
+
+    #[test]
+    fn friend_find_by_nickname_matches_remark_name() {
+        let db = test_db();
+        db.friend_upsert("wx_rn", Some("RealName"), Some("SearchableRemark"), None, None, None)
+            .unwrap();
+        let matches = db.friend_find_by_nickname("SearchableRemark").unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].wxid, "wx_rn");
     }
 }

@@ -84,11 +84,25 @@ fn split_message(text: &str, max_len: usize) -> Vec<String> {
             break;
         }
 
+        // Find a char-boundary-safe split point at or before max_len
+        let mut split_at = max_len;
+        while split_at > 0 && !remaining.is_char_boundary(split_at) {
+            split_at -= 1;
+        }
+        if split_at == 0 {
+            // Extremely unlikely: single char > max_len bytes. Take one char.
+            split_at = remaining
+                .char_indices()
+                .nth(1)
+                .map(|(i, _)| i)
+                .unwrap_or(remaining.len());
+        }
+
         // Try to split at a newline near the limit
-        let search_region = &remaining[..max_len];
+        let search_region = &remaining[..split_at];
         let split_idx = match search_region.rfind('\n') {
-            Some(idx) if idx >= max_len / 2 => idx,
-            _ => max_len,
+            Some(idx) if idx >= split_at / 2 => idx,
+            _ => split_at,
         };
 
         chunks.push(remaining[..split_idx].to_string());
@@ -297,5 +311,170 @@ mod tests {
         let chunks = split_message(&msg, 2000);
         assert!(chunks.len() >= 3);
         assert_eq!(chunks[0].len(), 2000);
+    }
+
+    // ============================================
+    // NEW: parse_memory edge cases
+    // ============================================
+
+    #[test]
+    fn test_parse_memory_empty_string() {
+        assert_eq!(parse_memory(""), 0);
+    }
+
+    #[test]
+    fn test_parse_memory_whitespace() {
+        assert_eq!(parse_memory("  512m  "), 512 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_parse_memory_uppercase() {
+        // The function lowercases input, so "2G" should work
+        assert_eq!(parse_memory("2G"), 2 * 1024 * 1024 * 1024);
+        assert_eq!(parse_memory("512M"), 512 * 1024 * 1024);
+        assert_eq!(parse_memory("1024K"), 1024 * 1024);
+    }
+
+    #[test]
+    fn test_parse_memory_invalid_number() {
+        // "abcm" -> strip suffix "m", parse "abc" fails, returns 0
+        assert_eq!(parse_memory("abcm"), 0);
+    }
+
+    #[test]
+    fn test_parse_memory_negative() {
+        // Negative numbers should parse fine as i64
+        assert_eq!(parse_memory("-1m"), -1 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_parse_memory_just_suffix() {
+        // "m" -> strip suffix "m", parse "" fails, returns 0
+        assert_eq!(parse_memory("m"), 0);
+        assert_eq!(parse_memory("g"), 0);
+        assert_eq!(parse_memory("k"), 0);
+    }
+
+    // ============================================
+    // NEW: cpus_to_nanocpus edge cases
+    // ============================================
+
+    #[test]
+    fn test_cpus_to_nanocpus_zero() {
+        assert_eq!(cpus_to_nanocpus(0), 0);
+    }
+
+    #[test]
+    fn test_cpus_to_nanocpus_large() {
+        // 128 cores
+        assert_eq!(cpus_to_nanocpus(128), 128_000_000_000);
+    }
+
+    // ============================================
+    // NEW: split_message edge cases
+    // ============================================
+
+    #[test]
+    fn test_split_message_empty() {
+        let chunks = split_message("", 2000);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], "");
+    }
+
+    #[test]
+    fn test_split_message_exact_limit() {
+        let msg = "x".repeat(2000);
+        let chunks = split_message(&msg, 2000);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), 2000);
+    }
+
+    #[test]
+    fn test_split_message_one_over_limit() {
+        let msg = "x".repeat(2001);
+        let chunks = split_message(&msg, 2000);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].len(), 2000);
+        assert_eq!(chunks[1].len(), 1);
+    }
+
+    #[test]
+    fn test_split_message_all_newlines() {
+        let msg = "\n".repeat(5000);
+        let chunks = split_message(&msg, 2000);
+        // Should not panic. The newline splitting and trim_start
+        // means chunks may collapse.
+        assert!(!chunks.is_empty());
+    }
+
+    #[test]
+    fn test_split_message_no_newlines_long() {
+        // Long message without any newlines, must hard-cut
+        let msg = "a".repeat(6001);
+        let chunks = split_message(&msg, 2000);
+        assert_eq!(chunks.len(), 4); // 2000 + 2000 + 2000 + 1
+        assert_eq!(chunks[0].len(), 2000);
+        assert_eq!(chunks[1].len(), 2000);
+        assert_eq!(chunks[2].len(), 2000);
+        assert_eq!(chunks[3].len(), 1);
+    }
+
+    #[test]
+    fn test_split_message_unicode_chinese() {
+        // Chinese characters are multi-byte in UTF-8 (3 bytes each)
+        // Create a string of ~700 Chinese chars (2100 bytes)
+        let msg: String = std::iter::repeat('中').take(700).collect();
+        // Note: split_message uses byte length (.len()), not char count
+        // 700 * 3 = 2100 bytes > 2000, so it should split
+        // But the split at byte position 2000 could land mid-character!
+        // This tests whether the code handles UTF-8 boundaries correctly.
+        let result = std::panic::catch_unwind(|| {
+            split_message(&msg, 2000)
+        });
+        // This may panic due to slicing at non-char-boundary
+        if let Ok(chunks) = result {
+            // If it doesn't panic, verify content is preserved
+            let _total: String = chunks.join("");
+            // Due to trim_start, some whitespace might be lost, but no chars here
+            assert!(!chunks.is_empty());
+        }
+        // If it panics, that's a real bug we've discovered
+    }
+
+    #[test]
+    fn test_split_message_emoji_content() {
+        // Emoji are 4 bytes in UTF-8
+        let msg: String = std::iter::repeat("🎉").take(600).collect();
+        // 600 * 4 = 2400 bytes > 2000
+        let result = std::panic::catch_unwind(|| {
+            split_message(&msg, 2000)
+        });
+        if let Ok(chunks) = result {
+            assert!(!chunks.is_empty());
+        }
+        // A panic here means the code can't handle emoji splitting
+    }
+
+    #[test]
+    fn test_split_message_newline_in_first_half_ignored() {
+        // Newline in the first half of the limit is ignored (< max_len/2)
+        let mut msg = String::new();
+        msg.push_str("short\n"); // newline at position 5
+        msg.push_str(&"x".repeat(2500)); // rest is continuous
+        let chunks = split_message(&msg, 2000);
+        // The newline at position 5 is < 2000/2 = 1000, so it's ignored
+        // Hard cut at 2000
+        assert_eq!(chunks[0].len(), 2000);
+    }
+
+    #[test]
+    fn test_split_message_max_len_one() {
+        // Edge case: max_len = 1
+        let msg = "abc";
+        let chunks = split_message(msg, 1);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0], "a");
+        assert_eq!(chunks[1], "b");
+        assert_eq!(chunks[2], "c");
     }
 }

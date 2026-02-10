@@ -241,3 +241,209 @@ pub fn init_config() -> Result<()> {
 pub fn get_config() -> &'static Config {
     CONFIG.get().expect("Config not initialized. Call init_config() first.")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================
+    // Config defaults tests
+    // ============================================
+
+    #[test]
+    fn config_default_admin_wxid_empty() {
+        let config = Config::default();
+        assert!(config.admin_wxid.is_empty());
+    }
+
+    #[test]
+    fn config_default_claude_cli_path() {
+        let config = ClaudeConfig::default();
+        assert_eq!(config.cli_path, "claude");
+    }
+
+    #[test]
+    fn config_default_claude_timeout() {
+        let config = ClaudeConfig::default();
+        assert_eq!(config.timeout, 120);
+    }
+
+    #[test]
+    fn config_default_session_expire_minutes() {
+        let config = SessionConfig::default();
+        assert_eq!(config.expire_minutes, 60);
+    }
+
+    #[test]
+    fn config_default_session_max_history() {
+        let config = SessionConfig::default();
+        assert_eq!(config.max_history, 50);
+    }
+
+    #[test]
+    fn config_default_rate_limits() {
+        let config = RateLimitConfig::default();
+        assert_eq!(config.max_per_minute, 10);
+        assert_eq!(config.max_per_day, 200);
+    }
+
+    #[test]
+    fn config_default_security_no_blocked_patterns() {
+        let config = SecurityConfig::default();
+        assert!(config.blocked_patterns.is_empty());
+        assert!(config.trusted_file_access);
+    }
+
+    #[test]
+    fn config_default_permissions() {
+        let config = PermissionsConfig::default();
+        assert!(config.notify_unauthorized);
+        assert_eq!(config.default_level, "normal");
+        // Unauthorized message should be non-empty Chinese text
+        assert!(!config.unauthorized_message.is_empty());
+    }
+
+    #[test]
+    fn config_default_logging() {
+        let config = LoggingConfig::default();
+        assert_eq!(config.level, "info");
+        assert_eq!(config.file, "logs/bridge.log");
+        assert!(config.log_message_content);
+    }
+
+    #[test]
+    fn config_default_docker_image() {
+        let config = crate::config::DockerConfig::default();
+        assert_eq!(config.image, "claude-sandbox:latest");
+        assert_eq!(config.container_prefix, "claude-friend-");
+    }
+
+    #[test]
+    fn config_default_docker_limits() {
+        let config = crate::config::DockerLimits::default();
+        assert_eq!(config.memory, "512m");
+        assert_eq!(config.admin_memory, "2g");
+        assert_eq!(config.cpus, 1);
+        assert_eq!(config.admin_cpus, 2);
+        assert_eq!(config.pids, 100);
+        assert_eq!(config.tmp_size, "100m");
+    }
+
+    #[test]
+    fn config_default_docker_network() {
+        let config = DockerNetwork::default();
+        assert_eq!(config.admin, "bridge");
+        assert_eq!(config.trusted, "claude-limited");
+        assert_eq!(config.normal, "none");
+    }
+
+    // ============================================
+    // expanded_data_dir tests
+    // ============================================
+
+    #[test]
+    fn expanded_data_dir_tilde_prefix() {
+        let config = crate::config::DockerConfig {
+            data_dir: "~/my-data".into(),
+            ..Default::default()
+        };
+        let expanded = config.expanded_data_dir();
+        // Should not start with ~ after expansion
+        assert!(!expanded.to_string_lossy().starts_with('~'));
+        // Should end with my-data
+        assert!(expanded.to_string_lossy().ends_with("my-data"));
+    }
+
+    #[test]
+    fn expanded_data_dir_absolute_path() {
+        let config = crate::config::DockerConfig {
+            data_dir: "/absolute/path".into(),
+            ..Default::default()
+        };
+        let expanded = config.expanded_data_dir();
+        assert_eq!(expanded, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn expanded_data_dir_relative_path() {
+        let config = crate::config::DockerConfig {
+            data_dir: "relative/path".into(),
+            ..Default::default()
+        };
+        let expanded = config.expanded_data_dir();
+        assert_eq!(expanded, PathBuf::from("relative/path"));
+    }
+
+    #[test]
+    fn expanded_data_dir_tilde_only() {
+        let config = crate::config::DockerConfig {
+            data_dir: "~".into(),
+            ..Default::default()
+        };
+        let expanded = config.expanded_data_dir();
+        // ~ alone: strip_prefix("~/") fails, so uses data_dir[1..] which is ""
+        // home.join("") = home directory itself
+        assert!(!expanded.to_string_lossy().contains('~'));
+    }
+
+    #[test]
+    fn expanded_data_dir_tilde_slash() {
+        let config = crate::config::DockerConfig {
+            data_dir: "~/".into(),
+            ..Default::default()
+        };
+        let expanded = config.expanded_data_dir();
+        assert!(!expanded.to_string_lossy().starts_with('~'));
+    }
+
+    // ============================================
+    // YAML deserialization tests
+    // ============================================
+
+    #[test]
+    fn config_deserialize_empty_yaml() {
+        // Empty YAML should use all defaults via #[serde(default)]
+        let config: Config = serde_yaml::from_str("{}").unwrap();
+        assert!(config.admin_wxid.is_empty());
+        assert_eq!(config.claude.timeout, 120);
+        assert_eq!(config.rate_limit.max_per_minute, 10);
+    }
+
+    #[test]
+    fn config_deserialize_partial_yaml() {
+        let yaml = r#"
+admin_wxid: "wx_admin_123"
+claude:
+  timeout: 300
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.admin_wxid, "wx_admin_123");
+        assert_eq!(config.claude.timeout, 300);
+        // Other fields should be defaults
+        assert_eq!(config.claude.cli_path, "claude");
+        assert_eq!(config.rate_limit.max_per_day, 200);
+    }
+
+    #[test]
+    fn config_deserialize_security_patterns() {
+        let yaml = r#"
+security:
+  blocked_patterns:
+    - "rm\\s+-rf"
+    - "sudo"
+    - "chmod\\s+777"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.security.blocked_patterns.len(), 3);
+        assert_eq!(config.security.blocked_patterns[0], "rm\\s+-rf");
+    }
+
+    #[test]
+    fn config_deserialize_unicode_admin_wxid() {
+        let yaml = r#"
+admin_wxid: "wxid_中文管理员"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.admin_wxid, "wxid_中文管理员");
+    }
+}

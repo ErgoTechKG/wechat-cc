@@ -1,6 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[allow(dead_code)]
 pub enum BridgeError {
     #[error("Config error: {0}")]
     Config(String),
@@ -21,4 +22,5 @@ pub enum BridgeError {
     Other(#[from] anyhow::Error),
 }
 
+#[allow(dead_code)]
 pub type Result<T> = std::result::Result<T, BridgeError>;

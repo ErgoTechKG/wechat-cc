@@ -107,6 +107,7 @@ impl std::fmt::Display for Permission {
 
 /// Result from executing Claude in a container.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct ExecClaudeResult {
     pub ok: bool,
     pub output: String,
@@ -728,6 +729,7 @@ impl DockerManager {
     // ============================================
 
     /// Stop all bridge containers.
+    #[allow(dead_code)]
     pub async fn stop_all(&self) -> Result<()> {
         let containers = self.list_containers().await?;
         let count = containers.len();
@@ -741,6 +743,7 @@ impl DockerManager {
     }
 
     /// Remove all stopped bridge containers.
+    #[allow(dead_code)]
     pub async fn cleanup(&self) -> Result<()> {
         let containers = self.list_containers().await?;
         for c in &containers {
@@ -979,5 +982,201 @@ mod tests {
         assert_eq!(config.network.normal, "none");
         assert_eq!(config.network.trusted, "claude-limited");
         assert_eq!(config.network.admin, "bridge");
+    }
+
+    // ============================================
+    // NEW: Container naming edge cases
+    // ============================================
+
+    #[test]
+    fn test_container_name_chinese_characters() {
+        let prefix = "claude-friend-";
+        let wxid = "wxid_张三";
+        let safe: String = wxid
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let name = format!("{}{}", prefix, safe);
+        // Chinese chars are not ASCII alphanumeric, so replaced with _
+        assert_eq!(name, "claude-friend-wxid___");
+    }
+
+    #[test]
+    fn test_container_name_empty_wxid() {
+        let prefix = "claude-friend-";
+        let wxid = "";
+        let safe: String = wxid
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let name = format!("{}{}", prefix, safe);
+        assert_eq!(name, "claude-friend-");
+    }
+
+    #[test]
+    fn test_container_name_all_special_chars() {
+        let prefix = "claude-friend-";
+        let wxid = "!@#$%^&*()";
+        let safe: String = wxid
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let name = format!("{}{}", prefix, safe);
+        assert_eq!(name, "claude-friend-__________");
+    }
+
+    #[test]
+    fn test_container_name_dots_and_hyphens_preserved() {
+        let prefix = "claude-friend-";
+        let wxid = "user.name-123";
+        let safe: String = wxid
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let name = format!("{}{}", prefix, safe);
+        assert_eq!(name, "claude-friend-user.name-123");
+    }
+
+    #[test]
+    fn test_container_name_emoji() {
+        let prefix = "claude-friend-";
+        let wxid = "user🎉test";
+        let safe: String = wxid
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let name = format!("{}{}", prefix, safe);
+        assert_eq!(name, "claude-friend-user_test");
+    }
+
+    #[test]
+    fn test_container_name_very_long_wxid() {
+        let prefix = "claude-friend-";
+        let wxid = "a".repeat(500);
+        let safe: String = wxid
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let name = format!("{}{}", prefix, safe);
+        assert_eq!(name.len(), 514); // prefix(14) + 500
+    }
+
+    // ============================================
+    // NEW: Permission enum tests
+    // ============================================
+
+    #[test]
+    fn test_permission_display_trait() {
+        assert_eq!(format!("{}", Permission::Normal), "normal");
+        assert_eq!(format!("{}", Permission::Trusted), "trusted");
+        assert_eq!(format!("{}", Permission::Admin), "admin");
+    }
+
+    #[test]
+    fn test_permission_equality() {
+        assert_eq!(Permission::Admin, Permission::Admin);
+        assert_ne!(Permission::Admin, Permission::Normal);
+        assert_ne!(Permission::Trusted, Permission::Normal);
+    }
+
+    #[test]
+    fn test_permission_copy() {
+        let p = Permission::Admin;
+        let p2 = p; // Copy
+        assert_eq!(p, p2); // Both still valid
+    }
+
+    // ============================================
+    // NEW: DockerLimits default validation
+    // ============================================
+
+    #[test]
+    fn test_default_limits_reasonable() {
+        let limits = DockerLimits::default();
+        // Memory should be positive
+        assert!(limits.memory > 0);
+        // Admin memory should be >= regular memory
+        assert!(limits.admin_memory >= limits.memory);
+        // CPUs should be positive
+        assert!(limits.cpus > 0);
+        // Admin CPUs should be >= regular
+        assert!(limits.admin_cpus >= limits.cpus);
+        // PIDs limit should be positive
+        assert!(limits.pids > 0);
+    }
+
+    // ============================================
+    // NEW: calculate_cpu_percent edge cases
+    // ============================================
+
+    #[test]
+    fn test_calculate_cpu_percent_no_delta() {
+        use bollard::container::Stats;
+
+        // When system_delta is 0, should return 0
+        let stats: Stats = serde_json::from_str(
+            r#"{
+                "read": "2024-01-01T00:00:00Z",
+                "preread": "2024-01-01T00:00:00Z",
+                "cpu_stats": {
+                    "cpu_usage": {"total_usage": 100, "usage_in_usermode": 50, "usage_in_kernelmode": 50, "percpu_usage": [100]},
+                    "system_cpu_usage": 1000,
+                    "online_cpus": 1,
+                    "throttling_data": {"periods": 0, "throttled_periods": 0, "throttled_time": 0}
+                },
+                "precpu_stats": {
+                    "cpu_usage": {"total_usage": 100, "usage_in_usermode": 50, "usage_in_kernelmode": 50, "percpu_usage": [100]},
+                    "system_cpu_usage": 1000,
+                    "online_cpus": 1,
+                    "throttling_data": {"periods": 0, "throttled_periods": 0, "throttled_time": 0}
+                },
+                "memory_stats": {},
+                "blkio_stats": {"io_service_bytes_recursive": [], "io_serviced_recursive": [], "io_queue_recursive": [], "io_service_time_recursive": [], "io_wait_time_recursive": [], "io_merged_recursive": [], "io_time_recursive": [], "sectors_recursive": []},
+                "pids_stats": {},
+                "networks": {},
+                "storage_stats": {},
+                "num_procs": 0
+            }"#,
+        )
+        .unwrap();
+
+        let result = calculate_cpu_percent(&stats);
+        assert_eq!(result, 0.0);
     }
 }

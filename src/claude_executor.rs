@@ -15,6 +15,18 @@ use crate::docker_manager::{
 /// Maximum response length before truncation (WeChat message friendly).
 const MAX_RESPONSE_LEN: usize = 4000;
 
+/// Truncate a string to at most `max_bytes` bytes at a valid UTF-8 char boundary.
+fn truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Claude Code executor backed by Docker containers.
 ///
 /// Each user's Claude runs in an isolated container. The executor manages:
@@ -205,7 +217,7 @@ impl ClaudeExecutor {
         debug!(
             "Executing Claude in container [{}]: {}...",
             wxid,
-            &message[..message.len().min(80)]
+            truncate_str(message, 80)
         );
 
         let options = ExecClaudeOptions {
@@ -227,7 +239,12 @@ impl ClaudeExecutor {
         // 6. Truncate if needed
         let mut response = result.output;
         if response.len() > MAX_RESPONSE_LEN {
-            response.truncate(MAX_RESPONSE_LEN);
+            // Find a valid char boundary at or before MAX_RESPONSE_LEN
+            let mut end = MAX_RESPONSE_LEN;
+            while end > 0 && !response.is_char_boundary(end) {
+                end -= 1;
+            }
+            response.truncate(end);
             response.push_str("\n\n... (response truncated)");
         }
 
@@ -375,12 +392,105 @@ fn is_session_expired(last_active: &str, expire_minutes: u64) -> bool {
         Ok(dt) => {
             let now = Utc::now().naive_utc();
             let elapsed = now.signed_duration_since(dt);
-            elapsed.num_minutes() as u64 > expire_minutes
+            // If elapsed is negative (future timestamp), session is not expired
+            let minutes = elapsed.num_minutes();
+            if minutes < 0 {
+                return false;
+            }
+            minutes as u64 > expire_minutes
         }
         Err(_) => {
             // If we can't parse, treat as expired
             warn!("Could not parse last_active timestamp: {}", last_active);
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ============================================
+    // parse_permission tests
+    // ============================================
+
+    #[test]
+    fn parse_permission_admin() {
+        assert_eq!(parse_permission("admin"), Permission::Admin);
+    }
+
+    #[test]
+    fn parse_permission_trusted() {
+        assert_eq!(parse_permission("trusted"), Permission::Trusted);
+    }
+
+    #[test]
+    fn parse_permission_normal() {
+        assert_eq!(parse_permission("normal"), Permission::Normal);
+    }
+
+    #[test]
+    fn parse_permission_unknown_defaults_to_normal() {
+        assert_eq!(parse_permission("blocked"), Permission::Normal);
+        assert_eq!(parse_permission(""), Permission::Normal);
+        assert_eq!(parse_permission("ADMIN"), Permission::Normal); // case sensitive
+        assert_eq!(parse_permission("superuser"), Permission::Normal);
+    }
+
+    // ============================================
+    // is_session_expired tests
+    // ============================================
+
+    #[test]
+    fn session_expired_old_timestamp() {
+        // A timestamp from 2020 should be expired with any reasonable window
+        assert!(is_session_expired("2020-01-01 00:00:00", 60));
+    }
+
+    #[test]
+    fn session_not_expired_recent() {
+        use chrono::Utc;
+        // Current timestamp should not be expired with a 60 minute window
+        let now = Utc::now().naive_utc();
+        let ts = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        assert!(!is_session_expired(&ts, 60));
+    }
+
+    #[test]
+    fn session_expired_with_zero_window() {
+        use chrono::Utc;
+        // Even a current timestamp should be expired with 0 minute window
+        // (since elapsed.num_minutes() == 0, and 0 > 0 is false)
+        let now = Utc::now().naive_utc();
+        let ts = now.format("%Y-%m-%d %H:%M:%S").to_string();
+        // 0 > 0 is false, so "not expired"
+        assert!(!is_session_expired(&ts, 0));
+    }
+
+    #[test]
+    fn session_expired_invalid_format() {
+        // Invalid format should be treated as expired
+        assert!(is_session_expired("not-a-date", 60));
+        assert!(is_session_expired("", 60));
+        assert!(is_session_expired("2024-13-01 00:00:00", 60)); // invalid month
+    }
+
+    #[test]
+    fn session_expired_iso8601_format_not_supported() {
+        // The code only supports "%Y-%m-%d %H:%M:%S", not ISO 8601 with T
+        assert!(is_session_expired("2024-01-01T00:00:00", 60));
+    }
+
+    #[test]
+    fn session_expired_max_window() {
+        // Very old timestamp with max u64 window should not expire
+        assert!(!is_session_expired("2020-01-01 00:00:00", u64::MAX));
+    }
+
+    #[test]
+    fn session_expired_future_timestamp() {
+        // A future timestamp should not be expired
+        assert!(!is_session_expired("2099-01-01 00:00:00", 60));
     }
 }
